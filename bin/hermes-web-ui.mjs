@@ -1,185 +1,139 @@
 #!/usr/bin/env node
-import { createServer as createViteServer } from 'http'
+import { spawn } from 'child_process'
 import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
-import { readFile, stat, readdir, writeFile, mkdir } from 'fs/promises'
-import { tmpdir } from 'os'
-import { randomBytes } from 'crypto'
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync } from 'fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const distDir = resolve(__dirname, '..', 'dist')
-const API_TARGET = 'http://127.0.0.1:8642'
+const serverEntry = resolve(__dirname, '..', 'dist', 'server', 'index.js')
+const PID_DIR = resolve(__dirname, '..', '.hermes-web-ui')
+const PID_FILE = join(PID_DIR, 'server.pid')
+const LOG_FILE = join(PID_DIR, 'server.log')
 const DEFAULT_PORT = 8648
-const UPLOAD_DIR = join(tmpdir(), 'hermes-uploads')
 
-const MIME_TYPES = {
-  '.html': 'text/html',
-  '.js': 'application/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
+function getPort() {
+  if (process.argv[3] && !isNaN(process.argv[3])) return parseInt(process.argv[3])
+  if (process.argv.includes('--port')) return parseInt(process.argv[process.argv.indexOf('--port') + 1])
+  return DEFAULT_PORT
 }
 
-function getMimeType(filePath) {
-  const ext = filePath.substring(filePath.lastIndexOf('.'))
-  return MIME_TYPES[ext] || 'application/octet-stream'
-}
-
-async function ensureUploadDir() {
-  await mkdir(UPLOAD_DIR, { recursive: true })
-}
-
-async function serveStatic(reqPath, res) {
-  let filePath = join(distDir, reqPath)
+function getPid() {
   try {
-    const s = await stat(filePath)
-    if (s.isDirectory()) filePath = join(filePath, 'index.html')
-    const data = await readFile(filePath)
-    res.writeHead(200, {
-      'Content-Type': getMimeType(filePath),
-      'Cache-Control': 'public, max-age=3600',
-    })
-    res.end(data)
+    return parseInt(readFileSync(PID_FILE, 'utf-8').trim())
   } catch {
-    // SPA fallback
-    try {
-      const data = await readFile(join(distDir, 'index.html'))
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(data)
-    } catch {
-      res.writeHead(404, { 'Content-Type': 'text/plain' })
-      res.end('Not Found')
-    }
+    return null
   }
 }
 
-async function handleUpload(req, res) {
-  if (req.method !== 'POST') {
-    res.writeHead(405, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Method not allowed' }))
-    return
-  }
-
-  const contentType = req.headers['content-type'] || ''
-  if (!contentType.startsWith('multipart/form-data')) {
-    res.writeHead(400, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Expected multipart/form-data' }))
-    return
-  }
-
+function isRunning(pid) {
   try {
-    await ensureUploadDir()
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    const body = Buffer.concat(chunks).toString()
-
-    const boundary = '--' + contentType.split('boundary=')[1]
-    const parts = body.split(boundary).slice(1, -1)
-
-    const results = []
-    for (const part of parts) {
-      const headerEnd = part.indexOf('\r\n\r\n')
-      if (headerEnd === -1) continue
-      const header = part.substring(0, headerEnd)
-      const data = part.substring(headerEnd + 4, part.length - 2)
-
-      const nameMatch = header.match(/name="([^"]+)"/)
-      const filenameMatch = header.match(/filename="([^"]+)"/)
-      if (!nameMatch || !filenameMatch) continue
-
-      const filename = filenameMatch[1]
-      const ext = filename.includes('.') ? '.' + filename.split('.').pop() : ''
-      const savedName = randomBytes(8).toString('hex') + ext
-      const savedPath = join(UPLOAD_DIR, savedName)
-
-      await writeFile(savedPath, Buffer.from(data, 'binary'))
-      results.push({ name: filename, path: savedPath })
-    }
-
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ files: results }))
-  } catch (err) {
-    res.writeHead(500, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: err.message }))
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
   }
 }
 
-async function proxyRequest(req, res, reqPath) {
-  const url = `${API_TARGET}${reqPath}`
-  const headers = { ...req.headers, host: '127.0.0.1:8642' }
-  delete headers['origin']
-  delete headers['referer']
+function writePid(pid) {
+  writeFileSync(PID_FILE, String(pid))
+}
 
-  try {
-    const hasBody = req.method !== 'GET' && req.method !== 'HEAD'
-    const bodyChunks = hasBody ? [] : null
-    if (hasBody) {
-      for await (const chunk of req) bodyChunks.push(chunk)
-    }
+function removePid() {
+  try { unlinkSync(PID_FILE) } catch {}
+}
 
-    const apiRes = await fetch(url, {
-      method: req.method,
-      headers,
-      body: bodyChunks ? Buffer.concat(bodyChunks) : undefined,
-    })
+function startDaemon(port) {
+  const existing = getPid()
+  if (existing && isRunning(existing)) {
+    console.log(`  ✗ hermes-web-ui is already running (PID: ${existing})`)
+    console.log(`    Use "hermes-web-ui stop" to stop it first`)
+    process.exit(1)
+  }
+  removePid() // stale pid file
+  mkdirSync(PID_DIR, { recursive: true })
 
-    const resHeaders = {}
-    apiRes.headers.forEach((v, k) => {
-      if (k !== 'transfer-encoding' && k !== 'connection') {
-        resHeaders[k] = v
-      }
-    })
-    resHeaders['x-accel-buffering'] = 'no'
-    resHeaders['cache-control'] = 'no-cache'
+  const logStream = openSync(LOG_FILE, 'a')
+  const child = spawn(process.execPath, [serverEntry], {
+    detached: true,
+    stdio: ['ignore', logStream, logStream],
+    env: { ...process.env, PORT: String(port) },
+  })
 
-    res.writeHead(apiRes.status, resHeaders)
+  child.unref()
+  writePid(child.pid)
 
-    if (apiRes.body) {
-      const reader = apiRes.body.getReader()
-      const pump = async () => {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          res.write(value)
-        }
-        res.end()
-      }
-      await pump()
+  // Wait a moment and check if the process is still alive
+  setTimeout(() => {
+    if (isRunning(child.pid)) {
+      console.log(`  ✓ hermes-web-ui started (PID: ${child.pid}, port: ${port})`)
+      console.log(`    http://localhost:${port}`)
+      console.log(`    Log: ${LOG_FILE}`)
     } else {
-      res.end()
+      console.log('  ✗ Failed to start hermes-web-ui')
+      console.log(`    Check log: ${LOG_FILE}`)
+      removePid()
+      process.exit(1)
     }
+  }, 500)
+}
+
+function stopDaemon() {
+  const pid = getPid()
+  if (!pid) {
+    console.log('  ✗ hermes-web-ui is not running')
+    process.exit(1)
+  }
+
+  if (!isRunning(pid)) {
+    console.log(`  ✗ Process ${pid} is not alive (stale PID file)`)
+    removePid()
+    process.exit(1)
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM')
+    removePid()
+    console.log(`  ✓ hermes-web-ui stopped (PID: ${pid})`)
   } catch (err) {
-    if (!res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'application/json' })
-    }
-    res.end(JSON.stringify({ error: { message: `API proxy error: ${err.message}` } }))
+    console.log(`  ✗ Failed to stop: ${err.message}`)
+    process.exit(1)
   }
 }
 
-const command = process.argv[2]
-
-if (command === 'build') {
-  console.log('Build is done during npm install. Use "npm run build" in the source repo.')
-  process.exit(1)
-}
-
-// start (default)
-const port = parseInt(process.argv[2] && !isNaN(process.argv[2]) ? process.argv[2] : process.argv.includes('--port') ? process.argv[process.argv.indexOf('--port') + 1] : '') || DEFAULT_PORT
-
-createViteServer(async (req, res) => {
-  const reqPath = req.url.split('?')[0]
-
-  if (reqPath === '/__upload') {
-    await handleUpload(req, res)
-  } else if (reqPath.startsWith('/api/') || reqPath.startsWith('/v1/') || reqPath === '/health' || reqPath.startsWith('/health')) {
-    await proxyRequest(req, res, reqPath)
+function showStatus() {
+  const pid = getPid()
+  if (pid && isRunning(pid)) {
+    console.log(`  ✓ hermes-web-ui is running (PID: ${pid})`)
   } else {
-    await serveStatic(reqPath, res)
+    if (pid) removePid() // clean stale
+    console.log('  ✗ hermes-web-ui is not running')
   }
-}).listen(port, '0.0.0.0', () => {
-  console.log(`  ➜  Hermes Web UI: http://localhost:${port}`)
-})
+}
+
+const command = process.argv[2] || 'start'
+
+switch (command) {
+  case 'start':
+    startDaemon(getPort())
+    break
+  case 'stop':
+    stopDaemon()
+    break
+  case 'restart':
+    stopDaemon()
+    setTimeout(() => startDaemon(getPort()), 500)
+    break
+  case 'status':
+    showStatus()
+    break
+  default:
+    // Direct run (foreground): hermes-web-ui [port]
+    const port = !isNaN(command) ? parseInt(command) : DEFAULT_PORT
+    const child = spawn(process.execPath, [serverEntry], {
+      stdio: 'inherit',
+      env: { ...process.env, PORT: String(port) },
+    })
+    child.on('exit', (code) => process.exit(code ?? 1))
+    process.on('SIGTERM', () => child.kill('SIGTERM'))
+    process.on('SIGINT', () => child.kill('SIGINT'))
+}

@@ -12,6 +12,10 @@ const attachments = ref<Attachment[]>([])
 
 const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
 
+function handleAttachClick() {
+  fileInputRef.value?.click()
+}
+
 function handleSend() {
   const text = inputText.value.trim()
   if (!text && attachments.value.length === 0) return
@@ -37,10 +41,6 @@ function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 100) + 'px'
-}
-
-function handleAttachClick() {
-  fileInputRef.value?.click()
 }
 
 function handleFileChange(e: Event) {
@@ -128,7 +128,7 @@ function isImage(type: string): boolean {
         @input="handleInput"
       ></textarea>
       <div class="input-actions">
-        <!-- <NTooltip trigger="hover">
+        <NTooltip trigger="hover">
           <template #trigger>
             <NButton quaternary size="small" @click="handleAttachClick" circle>
               <template #icon>
@@ -137,7 +137,7 @@ function isImage(type: string): boolean {
             </NButton>
           </template>
           Attach files
-        </NTooltip> -->
+        </NTooltip>
         <NButton
           v-if="chatStore.isStreaming"
           size="small"

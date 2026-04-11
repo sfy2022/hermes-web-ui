@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { startRun, streamRunEvents, type ChatMessage, type RunEvent } from '@/api/chat'
-import { useAppStore } from './app'
+import { fetchSessions, fetchSession, deleteSession as deleteSessionApi, type SessionSummary, type HermesMessage } from '@/api/sessions'
 
 export interface Attachment {
   id: string
@@ -24,12 +24,14 @@ export interface Message {
   attachments?: Attachment[]
 }
 
-interface Session {
+export interface Session {
   id: string
   title: string
   messages: Message[]
   createdAt: number
   updatedAt: number
+  model?: string
+  messageCount?: number
 }
 
 function uid(): string {
@@ -42,43 +44,117 @@ async function uploadFiles(attachments: Attachment[]): Promise<{ name: string; p
   for (const att of attachments) {
     if (att.file) formData.append('file', att.file, att.name)
   }
-  const res = await fetch('/__upload', { method: 'POST', body: formData })
+  const res = await fetch('/upload', { method: 'POST', body: formData })
   if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
   const data = await res.json() as { files: { name: string; path: string }[] }
   return data.files
 }
 
-const SESSIONS_KEY = 'hermes_chat_sessions'
-const ACTIVE_SESSION_KEY = 'hermes_active_session'
+function mapHermesMessages(msgs: HermesMessage[]): Message[] {
+  // Build a lookup of tool_call_id -> tool name from assistant messages with tool_calls
+  const toolNameMap = new Map<string, string>()
+  for (const msg of msgs) {
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        if (tc.function?.name && tc.id) {
+          toolNameMap.set(tc.id, tc.function.name)
+        }
+      }
+    }
+  }
 
-function loadSessions(): Session[] {
-  try {
-    return JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
-  } catch {
-    return []
+  const result: Message[] = []
+  for (const msg of msgs) {
+    // Skip assistant messages that only contain tool_calls (no meaningful content)
+    if (msg.role === 'assistant' && msg.tool_calls?.length && !msg.content?.trim()) {
+      // Emit a tool.started message for each tool call
+      for (const tc of msg.tool_calls) {
+        result.push({
+          id: String(msg.id) + '_' + tc.id,
+          role: 'tool',
+          content: '',
+          timestamp: Math.round(msg.timestamp * 1000),
+          toolName: tc.function?.name || 'Tool',
+          toolStatus: 'done',
+        })
+      }
+      continue
+    }
+
+    // Tool result messages
+    if (msg.role === 'tool') {
+      const toolName = msg.tool_name || toolNameMap.get(msg.tool_call_id || '') || 'Tool'
+      // Extract a short preview from the content
+      let preview = ''
+      if (msg.content) {
+        try {
+          const parsed = JSON.parse(msg.content)
+          preview = parsed.url || parsed.title || parsed.preview || parsed.summary || ''
+        } catch {
+          preview = msg.content.slice(0, 80)
+        }
+      }
+      result.push({
+        id: String(msg.id),
+        role: 'tool',
+        content: '',
+        timestamp: Math.round(msg.timestamp * 1000),
+        toolName,
+        toolPreview: preview.slice(0, 100) || undefined,
+        toolStatus: 'done',
+      })
+      continue
+    }
+
+    // Normal user/assistant messages
+    result.push({
+      id: String(msg.id),
+      role: msg.role,
+      content: msg.content || '',
+      timestamp: Math.round(msg.timestamp * 1000),
+    })
+  }
+  return result
+}
+
+function mapHermesSession(s: SessionSummary): Session {
+  return {
+    id: s.id,
+    title: s.title || 'New Chat',
+    messages: [],
+    createdAt: Math.round(s.started_at * 1000),
+    updatedAt: Math.round((s.ended_at || s.started_at) * 1000),
+    model: s.model,
+    messageCount: s.message_count,
   }
 }
 
-function saveSessions(sessions: Session[]) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions))
-}
-
-function loadActiveSessionId(): string | null {
-  return localStorage.getItem(ACTIVE_SESSION_KEY)
-}
-
 export const useChatStore = defineStore('chat', () => {
-  const appStore = useAppStore()
-  const sessions = ref<Session[]>(loadSessions())
-  const activeSessionId = ref<string | null>(loadActiveSessionId())
+  const sessions = ref<Session[]>([])
+  const activeSessionId = ref<string | null>(null)
   const isStreaming = ref(false)
   const abortController = ref<AbortController | null>(null)
+  const isLoadingSessions = ref(false)
+  const isLoadingMessages = ref(false)
 
-  const activeSession = ref<Session | null>(
-    sessions.value.find(s => s.id === activeSessionId.value) || null,
-  )
+  const activeSession = ref<Session | null>(null)
+  const messages = ref<Message[]>([])
 
-  const messages = ref<Message[]>(activeSession.value?.messages || [])
+  async function loadSessions() {
+    isLoadingSessions.value = true
+    try {
+      const list = await fetchSessions('api_server')
+      sessions.value = list.map(mapHermesSession)
+      // Auto-select the most recent session
+      if (!activeSessionId.value && sessions.value.length > 0) {
+        await switchSession(sessions.value[0].id)
+      }
+    } catch (err) {
+      console.error('Failed to load sessions:', err)
+    } finally {
+      isLoadingSessions.value = false
+    }
+  }
 
   function createSession(): Session {
     const session: Session = {
@@ -89,14 +165,33 @@ export const useChatStore = defineStore('chat', () => {
       updatedAt: Date.now(),
     }
     sessions.value.unshift(session)
-    saveSessions(sessions.value)
     return session
   }
 
-  function switchSession(sessionId: string) {
+  async function switchSession(sessionId: string) {
     activeSessionId.value = sessionId
-    localStorage.setItem(ACTIVE_SESSION_KEY, sessionId)
     activeSession.value = sessions.value.find(s => s.id === sessionId) || null
+
+    // If session has no messages loaded, fetch from API
+    if (activeSession.value && activeSession.value.messages.length === 0) {
+      isLoadingMessages.value = true
+      try {
+        const detail = await fetchSession(sessionId)
+        if (detail && detail.messages) {
+          const mapped = mapHermesMessages(detail.messages)
+          activeSession.value.messages = mapped
+          // Update title from Hermes data
+          if (detail.title) {
+            activeSession.value.title = detail.title
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load session messages:', err)
+      } finally {
+        isLoadingMessages.value = false
+      }
+    }
+
     messages.value = activeSession.value ? [...activeSession.value.messages] : []
   }
 
@@ -106,44 +201,17 @@ export const useChatStore = defineStore('chat', () => {
     switchSession(session.id)
   }
 
-  function deleteSession(sessionId: string) {
+  async function deleteSession(sessionId: string) {
+    await deleteSessionApi(sessionId)
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
-    saveSessions(sessions.value)
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
-        switchSession(sessions.value[0].id)
+        await switchSession(sessions.value[0].id)
       } else {
         const session = createSession()
         switchSession(session.id)
       }
     }
-  }
-
-  function stripNonSerializable(msgs: Message[]): Message[] {
-    return msgs.map(m => ({
-      ...m,
-      attachments: m.attachments?.map(a => ({ ...a, file: undefined, url: '' })),
-    }))
-  }
-
-  function persistMessages() {
-    if (!activeSession.value || !appStore.sessionPersistence) return
-    activeSession.value.messages = stripNonSerializable(messages.value)
-    activeSession.value.updatedAt = Date.now()
-
-    if (activeSession.value.title === 'New Chat') {
-      const firstUser = messages.value.find(m => m.role === 'user')
-      if (firstUser) {
-        const title = firstUser.attachments?.length
-          ? firstUser.attachments.map(a => a.name).join(', ')
-          : firstUser.content
-        activeSession.value.title = title.slice(0, 40) + (title.length > 40 ? '...' : '')
-      }
-    }
-
-    const idx = sessions.value.findIndex(s => s.id === activeSession.value!.id)
-    if (idx !== -1) sessions.value[idx] = activeSession.value
-    saveSessions(sessions.value)
   }
 
   function addMessage(msg: Message) {
@@ -155,6 +223,20 @@ export const useChatStore = defineStore('chat', () => {
     if (idx !== -1) {
       messages.value[idx] = { ...messages.value[idx], ...update }
     }
+  }
+
+  function updateSessionTitle() {
+    if (!activeSession.value) return
+    if (activeSession.value.title === 'New Chat') {
+      const firstUser = messages.value.find(m => m.role === 'user')
+      if (firstUser) {
+        const title = firstUser.attachments?.length
+          ? firstUser.attachments.map(a => a.name).join(', ')
+          : firstUser.content
+        activeSession.value.title = title.slice(0, 40) + (title.length > 40 ? '...' : '')
+      }
+    }
+    activeSession.value.updatedAt = Date.now()
   }
 
   async function sendMessage(content: string, attachments?: Attachment[]) {
@@ -173,7 +255,7 @@ export const useChatStore = defineStore('chat', () => {
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     }
     addMessage(userMsg)
-    persistMessages()
+    updateSessionTitle()
 
     isStreaming.value = true
 
@@ -206,7 +288,6 @@ export const useChatStore = defineStore('chat', () => {
           timestamp: Date.now(),
         })
         isStreaming.value = false
-        persistMessages()
         return
       }
 
@@ -217,11 +298,9 @@ export const useChatStore = defineStore('chat', () => {
         (evt: RunEvent) => {
           switch (evt.event) {
             case 'run.started':
-              // run started, nothing to render yet
               break
 
             case 'message.delta': {
-              // Find or create the assistant message
               const last = messages.value[messages.value.length - 1]
               if (last?.role === 'assistant' && last.isStreaming) {
                 last.content += evt.delta || ''
@@ -238,12 +317,10 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'tool.started': {
-              // Close any streaming assistant message first
               const last = messages.value[messages.value.length - 1]
               if (last?.isStreaming) {
                 updateMessage(last.id, { isStreaming: false })
               }
-              // Add tool message
               addMessage({
                 id: uid(),
                 role: 'tool',
@@ -257,7 +334,6 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'tool.completed': {
-              // Find the running tool message and mark done
               const toolMsgs = messages.value.filter(
                 m => m.role === 'tool' && m.toolStatus === 'running',
               )
@@ -269,18 +345,16 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'run.completed':
-              // Close any streaming message
               const lastMsg = messages.value[messages.value.length - 1]
               if (lastMsg?.isStreaming) {
                 updateMessage(lastMsg.id, { isStreaming: false })
               }
               isStreaming.value = false
               abortController.value = null
-              persistMessages()
+              updateSessionTitle()
               break
 
             case 'run.failed':
-              // Mark error
               const lastErr = messages.value[messages.value.length - 1]
               if (lastErr?.isStreaming) {
                 updateMessage(lastErr.id, {
@@ -296,7 +370,6 @@ export const useChatStore = defineStore('chat', () => {
                   timestamp: Date.now(),
                 })
               }
-              // Mark any running tools as error
               messages.value.forEach((m, i) => {
                 if (m.role === 'tool' && m.toolStatus === 'running') {
                   messages.value[i] = { ...m, toolStatus: 'error' }
@@ -304,7 +377,6 @@ export const useChatStore = defineStore('chat', () => {
               })
               isStreaming.value = false
               abortController.value = null
-              persistMessages()
               break
           }
         },
@@ -316,7 +388,7 @@ export const useChatStore = defineStore('chat', () => {
           }
           isStreaming.value = false
           abortController.value = null
-          persistMessages()
+          updateSessionTitle()
         },
         // onError
         (err) => {
@@ -337,7 +409,6 @@ export const useChatStore = defineStore('chat', () => {
           }
           isStreaming.value = false
           abortController.value = null
-          persistMessages()
         },
       )
     } catch (err: any) {
@@ -349,7 +420,6 @@ export const useChatStore = defineStore('chat', () => {
       })
       isStreaming.value = false
       abortController.value = null
-      persistMessages()
     }
   }
 
@@ -363,12 +433,8 @@ export const useChatStore = defineStore('chat', () => {
     abortController.value = null
   }
 
-  if (sessions.value.length === 0) {
-    const session = createSession()
-    switchSession(session.id)
-  } else if (!activeSession.value) {
-    switchSession(sessions.value[0].id)
-  }
+  // Load sessions on init
+  loadSessions()
 
   return {
     sessions,
@@ -376,10 +442,13 @@ export const useChatStore = defineStore('chat', () => {
     activeSession,
     messages,
     isStreaming,
+    isLoadingSessions,
+    isLoadingMessages,
     newChat,
     switchSession,
     deleteSession,
     sendMessage,
     stopStreaming,
+    loadSessions,
   }
 })

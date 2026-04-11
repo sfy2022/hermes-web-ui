@@ -10,7 +10,13 @@ package-lock.json
 node_modules
 dist
 dist-ssr
+server/dist
 *.local
+
+# Server data
+server/data/
+server/node_modules/
+.hermes-web-ui/
 
 # Editor directories and files
 .vscode/*

@@ -2,11 +2,14 @@
 import { onMounted } from 'vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import { useAppStore } from '@/stores/app'
+import { useChatStore } from '@/stores/chat'
 
 const appStore = useAppStore()
+const chatStore = useChatStore()
 
 onMounted(() => {
   appStore.loadModels()
+  chatStore.loadSessions()
 })
 </script>
 

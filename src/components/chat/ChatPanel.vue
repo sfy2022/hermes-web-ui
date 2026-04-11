@@ -13,11 +13,11 @@ const message = useMessage()
 const showSessions = ref(true)
 
 const sortedSessions = computed(() => {
-  return [...chatStore.sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  return [...chatStore.sessions].sort((a, b) => b.createdAt - a.createdAt)
 })
 
 const activeSessionLabel = computed(() =>
-  chatStore.activeSession?.title || 'New Chat',
+  chatStore.activeSession?.id || 'New Chat',
 )
 
 function handleNewChat() {
@@ -58,6 +58,8 @@ function formatTime(ts: number) {
         </NButton>
       </div>
       <div v-if="showSessions" class="session-items">
+        <div v-if="chatStore.isLoadingSessions" class="session-loading">Loading...</div>
+        <div v-else-if="sortedSessions.length === 0" class="session-empty">No sessions</div>
         <button
           v-for="s in sortedSessions"
           :key="s.id"
@@ -66,8 +68,8 @@ function formatTime(ts: number) {
           @click="chatStore.switchSession(s.id)"
         >
           <div class="session-item-content">
-            <span class="session-item-title">{{ s.title }}</span>
-            <span class="session-item-time">{{ formatTime(s.updatedAt) }}</span>
+            <span class="session-item-title">{{ s.id }}</span>
+            <span class="session-item-time">{{ formatTime(s.createdAt) }}</span>
           </div>
           <NPopconfirm
             v-if="s.id !== chatStore.activeSessionId || sortedSessions.length > 1"
@@ -167,6 +169,14 @@ function formatTime(ts: number) {
   flex: 1;
   overflow-y: auto;
   padding: 0 6px 12px;
+}
+
+.session-loading,
+.session-empty {
+  padding: 16px 10px;
+  font-size: 12px;
+  color: $text-muted;
+  text-align: center;
 }
 
 .session-item {
