@@ -19,9 +19,19 @@ const router = createRouter({
       component: () => import('@/views/LogsView.vue'),
     },
     {
+      path: '/skills',
+      name: 'skills',
+      component: () => import('@/views/SkillsView.vue'),
+    },
+    {
+      path: '/memory',
+      name: 'memory',
+      component: () => import('@/views/MemoryView.vue'),
+    },
+    {
       path: '/settings',
       name: 'settings',
-      redirect: '/',
+      component: () => import('@/views/SettingsView.vue'),
     },
   ],
 })

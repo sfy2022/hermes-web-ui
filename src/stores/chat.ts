@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { startRun, streamRunEvents, type ChatMessage, type RunEvent } from '@/api/chat'
 import { fetchSessions, fetchSession, deleteSession as deleteSessionApi, type SessionSummary, type HermesMessage } from '@/api/sessions'
+import { useAppStore } from './app'
 
 export interface Attachment {
   id: string
@@ -31,6 +32,7 @@ export interface Session {
   createdAt: number
   updatedAt: number
   model?: string
+  provider?: string
   messageCount?: number
 }
 
@@ -125,6 +127,7 @@ function mapHermesSession(s: SessionSummary): Session {
     createdAt: Math.round(s.started_at * 1000),
     updatedAt: Math.round((s.ended_at || s.started_at) * 1000),
     model: s.model,
+    provider: (s as any).billing_provider || '',
     messageCount: s.message_count,
   }
 }
@@ -145,6 +148,22 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const list = await fetchSessions('api_server')
       sessions.value = list.map(mapHermesSession)
+      // Backfill titles from first user message for sessions with null title
+      const nullTitleSessions = sessions.value.filter(s => s.title === 'New Chat')
+      if (nullTitleSessions.length > 0) {
+        await Promise.allSettled(
+          nullTitleSessions.map(async (s) => {
+            const detail = await fetchSession(s.id)
+            if (detail?.messages) {
+              const firstUser = detail.messages.find(m => m.role === 'user')
+              if (firstUser) {
+                const t = firstUser.content.slice(0, 40)
+                s.title = t + (firstUser.content.length > 40 ? '...' : '')
+              }
+            }
+          })
+        )
+      }
       // Auto-select the most recent session
       if (!activeSessionId.value && sessions.value.length > 0) {
         await switchSession(sessions.value[0].id)
@@ -180,9 +199,15 @@ export const useChatStore = defineStore('chat', () => {
         if (detail && detail.messages) {
           const mapped = mapHermesMessages(detail.messages)
           activeSession.value.messages = mapped
-          // Update title from Hermes data
+          // Update title: use Hermes title, or fallback to first user message
           if (detail.title) {
             activeSession.value.title = detail.title
+          } else {
+            const firstUser = mapped.find(m => m.role === 'user')
+            if (firstUser) {
+              const t = firstUser.content.slice(0, 40)
+              activeSession.value.title = t + (firstUser.content.length > 40 ? '...' : '')
+            }
           }
         }
       } catch (err) {
@@ -198,7 +223,21 @@ export const useChatStore = defineStore('chat', () => {
   function newChat() {
     if (isStreaming.value) return
     const session = createSession()
+    // Inherit current global model
+    const appStore = useAppStore()
+    session.model = appStore.selectedModel || undefined
     switchSession(session.id)
+  }
+
+  async function switchSessionModel(modelId: string, provider?: string) {
+    if (!activeSession.value) return
+    activeSession.value.model = modelId
+    activeSession.value.provider = provider || ''
+    // If provider changed, update global config too (Hermes requires it)
+    if (provider) {
+      const { useAppStore } = await import('./app')
+      await useAppStore().switchModel(modelId, provider)
+    }
   }
 
   async function deleteSession(sessionId: string) {
@@ -273,10 +312,14 @@ export const useChatStore = defineStore('chat', () => {
         inputText = inputText ? inputText + '\n\n' + pathParts.join('\n') : pathParts.join('\n')
       }
 
+      const appStore = useAppStore()
+      // Use session-level model if set, otherwise fall back to global
+      const sessionModel = activeSession.value?.model || appStore.selectedModel
       const run = await startRun({
         input: inputText,
         conversation_history: history,
         session_id: activeSession.value?.id,
+        model: sessionModel || undefined,
       })
 
       const runId = (run as any).run_id || (run as any).id
@@ -446,6 +489,7 @@ export const useChatStore = defineStore('chat', () => {
     isLoadingMessages,
     newChat,
     switchSession,
+    switchSessionModel,
     deleteSession,
     sendMessage,
     stopStreaming,

@@ -9,6 +9,7 @@ import { useAppStore } from '@/stores/app'
 const appStore = useAppStore()
 
 onMounted(() => {
+  appStore.loadModels()
   appStore.startHealthPolling()
 })
 

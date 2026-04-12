@@ -20,6 +20,10 @@ const activeSessionLabel = computed(() =>
   chatStore.activeSession?.id || 'New Chat',
 )
 
+const sessionModelLabel = computed(() =>
+  chatStore.activeSession?.model || appStore.selectedModel || '',
+)
+
 function handleNewChat() {
   chatStore.newChat()
 }
@@ -58,7 +62,7 @@ function formatTime(ts: number) {
         </NButton>
       </div>
       <div v-if="showSessions" class="session-items">
-        <div v-if="chatStore.isLoadingSessions" class="session-loading">Loading...</div>
+        <div v-if="chatStore.isLoadingSessions && sortedSessions.length === 0" class="session-loading">Loading...</div>
         <div v-else-if="sortedSessions.length === 0" class="session-empty">No sessions</div>
         <button
           v-for="s in sortedSessions"
@@ -68,8 +72,11 @@ function formatTime(ts: number) {
           @click="chatStore.switchSession(s.id)"
         >
           <div class="session-item-content">
-            <span class="session-item-title">{{ s.id }}</span>
-            <span class="session-item-time">{{ formatTime(s.createdAt) }}</span>
+            <span class="session-item-title">{{ s.title }}</span>
+            <span class="session-item-meta">
+              <span v-if="s.model" class="session-item-model">{{ s.model }}</span>
+              <span class="session-item-time">{{ formatTime(s.createdAt) }}</span>
+            </span>
           </div>
           <NPopconfirm
             v-if="s.id !== chatStore.activeSessionId || sortedSessions.length > 1"
@@ -96,7 +103,9 @@ function formatTime(ts: number) {
             </template>
           </NButton>
           <span class="header-session-title">{{ activeSessionLabel }}</span>
-          <span class="model-badge">{{ appStore.selectedModel }}</span>
+        </div>
+        <div class="header-center">
+          <span v-if="sessionModelLabel" class="model-badge">{{ sessionModelLabel }}</span>
         </div>
         <div class="header-actions">
           <NTooltip trigger="hover">
@@ -224,10 +233,29 @@ function formatTime(ts: number) {
 }
 
 .session-item-time {
-  display: block;
   font-size: 11px;
   color: $text-muted;
+}
+
+.session-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 2px;
+}
+
+.session-item-model {
+  font-size: 10px;
+  color: $accent-primary;
+  background: rgba($accent-primary, 0.08);
+  padding: 0 5px;
+  border-radius: 3px;
+  line-height: 16px;
+  flex-shrink: 0;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-item-delete {
@@ -269,6 +297,14 @@ function formatTime(ts: number) {
   align-items: center;
   gap: 8px;
   overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+
+.header-center {
+  flex-shrink: 0;
+  max-width: 240px;
+  min-width: 140px;
 }
 
 .header-session-title {

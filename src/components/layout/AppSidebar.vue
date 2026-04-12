@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import ModelSelector from './ModelSelector.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,6 +50,32 @@ function handleNav(key: string) {
 
       <button
         class="nav-item"
+        :class="{ active: selectedKey === 'skills' }"
+        @click="handleNav('skills')"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 2 7 12 12 22 7 12 2" />
+          <polyline points="2 17 12 22 22 17" />
+          <polyline points="2 12 12 17 22 12" />
+        </svg>
+        <span>Skills</span>
+      </button>
+
+      <button
+        class="nav-item"
+        :class="{ active: selectedKey === 'memory' }"
+        @click="handleNav('memory')"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18h6" />
+          <path d="M10 22h4" />
+          <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" />
+        </svg>
+        <span>Memory</span>
+      </button>
+
+      <button
+        class="nav-item"
         :class="{ active: selectedKey === 'logs' }"
         @click="handleNav('logs')"
       >
@@ -62,6 +89,8 @@ function handleNav(key: string) {
         <span>Logs</span>
       </button>
     </nav>
+
+    <ModelSelector />
 
     <div class="sidebar-footer">
       <div class="status-row">

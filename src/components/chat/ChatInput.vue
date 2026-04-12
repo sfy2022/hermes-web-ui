@@ -9,12 +9,107 @@ const inputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachments = ref<Attachment[]>([])
+const isDragging = ref(false)
+const dragCounter = ref(0)
 
 const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
+
+// --- Voice input (Web Speech API) ---
+// TODO: re-enable when needed — browser-native speech-to-text
+// const hasSpeechRecognition = ref(false)
+// let recognition: SpeechRecognition | null = null
+// let finalTranscript = ''
+// let prefixText = ''
+// onMounted(() => {
+//   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+//   if (!SR) return
+//   recognition = new SR()
+//   recognition.continuous = false
+//   recognition.interimResults = true
+//   recognition.lang = 'en-US'
+//   hasSpeechRecognition.value = true
+//   recognition.onresult = (event: SpeechRecognitionEvent) => { ... }
+//   recognition.onend = () => { ... }
+//   recognition.onerror = (event: SpeechRecognitionErrorEvent) => { ... }
+// })
+// onUnmounted(() => { if (recognition && isRecording.value) recognition.stop() })
+
+// --- File attachment helpers ---
+
+function addFile(file: File) {
+  if (attachments.value.find(a => a.name === file.name)) return
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  const url = URL.createObjectURL(file)
+  attachments.value.push({
+    id,
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    url,
+    file,
+  })
+}
 
 function handleAttachClick() {
   fileInputRef.value?.click()
 }
+
+function handleFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (!input.files) return
+  for (const file of input.files) addFile(file)
+  input.value = ''
+}
+
+// --- Paste image ---
+
+function handlePaste(e: ClipboardEvent) {
+  const items = Array.from(e.clipboardData?.items || [])
+  const imageItems = items.filter(i => i.type.startsWith('image/'))
+  if (!imageItems.length) return
+  e.preventDefault()
+  for (const item of imageItems) {
+    const blob = item.getAsFile()
+    if (!blob) continue
+    const ext = item.type.split('/')[1] || 'png'
+    const file = new File([blob], `pasted-${Date.now()}.${ext}`, { type: item.type })
+    addFile(file)
+  }
+}
+
+// --- Drag and drop ---
+
+function handleDragOver(e: DragEvent) {
+  e.preventDefault()
+}
+
+function handleDragEnter(e: DragEvent) {
+  e.preventDefault()
+  if (e.dataTransfer?.types.includes('Files')) {
+    dragCounter.value++
+    isDragging.value = true
+  }
+}
+
+function handleDragLeave() {
+  dragCounter.value--
+  if (dragCounter.value <= 0) {
+    dragCounter.value = 0
+    isDragging.value = false
+  }
+}
+
+function handleDrop(e: DragEvent) {
+  e.preventDefault()
+  dragCounter.value = 0
+  isDragging.value = false
+  const files = Array.from(e.dataTransfer?.files || [])
+  if (!files.length) return
+  for (const file of files) addFile(file)
+  textareaRef.value?.focus()
+}
+
+// --- Send ---
 
 function handleSend() {
   const text = inputText.value.trim()
@@ -24,7 +119,6 @@ function handleSend() {
   inputText.value = ''
   attachments.value = []
 
-  // Reset textarea height
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto'
   }
@@ -41,28 +135,6 @@ function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 100) + 'px'
-}
-
-function handleFileChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const files = input.files
-  if (!files) return
-
-  for (const file of files) {
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
-    const url = URL.createObjectURL(file)
-    attachments.value.push({
-      id,
-      name: file.name,
-      type: file.type,
-      size: file.size,
-      url,
-      file,
-    })
-  }
-
-  // Reset input so the same file can be re-selected
-  input.value = ''
 }
 
 function removeAttachment(id: string) {
@@ -110,7 +182,14 @@ function isImage(type: string): boolean {
       </div>
     </div>
 
-    <div class="input-wrapper">
+    <div
+      class="input-wrapper"
+      :class="{ 'drag-over': isDragging }"
+      @dragover="handleDragOver"
+      @dragenter="handleDragEnter"
+      @dragleave="handleDragLeave"
+      @drop="handleDrop"
+    >
       <input
         ref="fileInputRef"
         type="file"
@@ -126,6 +205,7 @@ function isImage(type: string): boolean {
         rows="1"
         @keydown="handleKeydown"
         @input="handleInput"
+        @paste="handlePaste"
       ></textarea>
       <div class="input-actions">
         <NTooltip trigger="hover">
@@ -287,5 +367,12 @@ function isImage(type: string): boolean {
   gap: 6px;
   flex-shrink: 0;
   align-items: center;
+}
+
+// Drag-over state
+.input-wrapper.drag-over {
+  border-color: #4a90d9;
+  border-style: dashed;
+  background-color: rgba(74, 144, 217, 0.04);
 }
 </style>

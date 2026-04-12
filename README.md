@@ -72,6 +72,7 @@ hermes-web-ui/
 │   │   ├── proxy.ts               # API proxy to Hermes (/api/*, /v1/*)
 │   │   ├── upload.ts              # File upload (POST /upload)
 │   │   ├── sessions.ts            # Session management via Hermes CLI
+│   │   ├── filesystem.ts          # Skills, memory, config model management
 │   │   ├── webhook.ts             # Webhook receiver
 │   │   └── logs.ts                # Log file listing and reading
 │   └── services/
@@ -80,13 +81,16 @@ hermes-web-ui/
 │   ├── api/                       # Frontend API layer
 │   ├── stores/                    # Pinia state management
 │   ├── components/
-│   │   ├── layout/AppSidebar.vue  # Sidebar navigation
+│   │   ├── layout/
+│   │   │   ├── AppSidebar.vue     # Sidebar navigation
+│   │   │   └── ModelSelector.vue  # Global model selector
 │   │   ├── chat/                  # Chat components
 │   │   └── jobs/                  # Job components
 │   ├── views/
 │   │   ├── ChatView.vue           # Chat page
 │   │   ├── JobsView.vue           # Jobs page
-│   │   └── LogsView.vue           # Logs page
+│   │   ├── LogsView.vue           # Logs page
+│   │   └── SettingsView.vue       # Settings (model management)
 │   └── router/index.ts            # Router configuration
 └── dist/                          # Build output (published to npm)
     ├── server/index.js            # Compiled BFF
@@ -102,6 +106,16 @@ hermes-web-ui/
 - Multi-session switching with message history
 - Markdown rendering with syntax highlighting and code copy
 - File upload support (saved to temp, path passed to API)
+- Model selector — automatically discovers available models from `~/.hermes/auth.json` credential pool
+- Global model switching (updates `~/.hermes/config.yaml`)
+- Per-session model display (badge in chat header and session list)
+
+### Model Management
+- Automatically reads credential pool from `~/.hermes/auth.json`
+- Fetches available models from each provider endpoint (`/v1/models`)
+- Groups models by provider (e.g. zai, subrouter.ai)
+- Switching model updates `model.provider` in config.yaml to bypass env auto-detection
+- Error handling: parallel fetching, per-provider timeout, fallback to config.yaml parsing
 
 ### Scheduled Jobs
 - Job list view (including paused/disabled jobs)
@@ -133,6 +147,9 @@ The BFF layer handles:
 - SSE streaming passthrough
 - File upload to temp directory
 - Session CRUD via Hermes CLI
+- Model discovery from `~/.hermes/auth.json` credential pool
+- Config.yaml model switching (reads/writes `~/.hermes/config.yaml`)
+- Skills, memory, and custom provider management
 - Log file reading and parsing
 - Static file serving (SPA fallback)
 

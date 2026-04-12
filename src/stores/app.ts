@@ -1,19 +1,18 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { checkHealth, fetchModels } from '@/api/system'
-import type { Model } from '@/api/system'
+import { checkHealth, fetchAvailableModels, updateDefaultModel, type AvailableModelGroup } from '@/api/system'
 
 export const useAppStore = defineStore('app', () => {
   const connected = ref(false)
   const serverVersion = ref('')
-  const models = ref<Model[]>([])
+  const modelGroups = ref<AvailableModelGroup[]>([])
+  const selectedModel = ref('')
   const healthPollTimer = ref<ReturnType<typeof setInterval>>()
 
   // Settings
   const streamEnabled = ref(true)
   const sessionPersistence = ref(true)
   const maxTokens = ref(4096)
-  const selectedModel = ref('hermes-agent')
 
   async function checkConnection() {
     try {
@@ -27,13 +26,23 @@ export const useAppStore = defineStore('app', () => {
 
   async function loadModels() {
     try {
-      const res = await fetchModels()
-      models.value = res.data || []
-      if (models.value.length > 0 && !models.value.find(m => m.id === selectedModel.value)) {
-        selectedModel.value = models.value[0].id
-      }
+      const res = await fetchAvailableModels()
+      modelGroups.value = res.groups
+      selectedModel.value = res.default
     } catch {
       // ignore
+    }
+  }
+
+  async function switchModel(modelId: string, providerOverride?: string) {
+    try {
+      // Find the group containing this model to get provider info
+      const group = modelGroups.value.find(g => g.models.includes(modelId))
+      const provider = providerOverride || group?.provider || ''
+      await updateDefaultModel({ default: modelId, provider })
+      selectedModel.value = modelId
+    } catch (err: any) {
+      console.error('Failed to switch model:', err)
     }
   }
 
@@ -53,13 +62,14 @@ export const useAppStore = defineStore('app', () => {
   return {
     connected,
     serverVersion,
-    models,
+    modelGroups,
+    selectedModel,
     streamEnabled,
     sessionPersistence,
     maxTokens,
-    selectedModel,
     checkConnection,
     loadModels,
+    switchModel,
     startHealthPolling,
     stopHealthPolling,
   }

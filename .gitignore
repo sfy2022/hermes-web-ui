@@ -12,7 +12,7 @@ dist
 dist-ssr
 server/dist
 *.local
-
+ROADMAP.md
 # Server data
 server/data/
 server/node_modules/

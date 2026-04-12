@@ -10,6 +10,7 @@ export interface StartRunRequest {
   instructions?: string
   conversation_history?: ChatMessage[]
   session_id?: string
+  model?: string
 }
 
 export interface StartRunResponse {

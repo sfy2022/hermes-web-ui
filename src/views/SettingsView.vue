@@ -1,26 +1,17 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import {
-  NButton, NInput, NSwitch, NSlider, NSelect, NDataTable, useMessage,
+  NButton, NSwitch, NSlider, NDataTable, useMessage,
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
-import { setServerUrl, setApiKey, getBaseUrlValue } from '@/api/client'
 
 const appStore = useAppStore()
 const message = useMessage()
 
-const serverUrl = ref(getBaseUrlValue())
-const apiKey = ref(localStorage.getItem('hermes_api_key') || '')
 const testingConnection = ref(false)
-
-const modelOptions = computed(() =>
-  appStore.models.map(m => ({ label: m.id, value: m.id })),
-)
 
 async function handleTestConnection() {
   testingConnection.value = true
-  setServerUrl(serverUrl.value)
-  if (apiKey.value) setApiKey(apiKey.value)
   try {
     await appStore.checkConnection()
     if (appStore.connected) {
@@ -35,34 +26,18 @@ async function handleTestConnection() {
   }
 }
 
-function handleSaveApiKey() {
-  setApiKey(apiKey.value)
-  message.success('API key saved')
-}
-
-const endpointColumns = [
-  { title: 'Method', key: 'method', width: 80 },
-  { title: 'Endpoint', key: 'endpoint' },
-  { title: 'Description', key: 'description' },
+const providerColumns = [
+  { title: 'Provider', key: 'provider' },
+  { title: 'Models', key: 'models' },
+  { title: 'Base URL', key: 'base_url' },
 ]
 
 const endpoints = [
   { method: 'GET', endpoint: '/health', description: 'Health Check' },
-  { method: 'GET', endpoint: '/v1/health', description: 'Health Check (v1)' },
-  { method: 'GET', endpoint: '/v1/models', description: 'Model List' },
-  { method: 'POST', endpoint: '/v1/chat/completions', description: 'Chat Completions (OpenAI compatible)' },
-  { method: 'POST', endpoint: '/v1/responses', description: 'Create Response (stateful)' },
-  { method: 'GET', endpoint: '/v1/responses/{id}', description: 'Get Stored Response' },
-  { method: 'DELETE', endpoint: '/v1/responses/{id}', description: 'Delete Response' },
   { method: 'POST', endpoint: '/v1/runs', description: 'Start Async Run' },
   { method: 'GET', endpoint: '/v1/runs/{id}/events', description: 'SSE Event Stream' },
   { method: 'GET', endpoint: '/api/jobs', description: 'List Jobs' },
   { method: 'POST', endpoint: '/api/jobs', description: 'Create Job' },
-  { method: 'GET', endpoint: '/api/jobs/{id}', description: 'Get Job Detail' },
-  { method: 'PATCH', endpoint: '/api/jobs/{id}', description: 'Update Job' },
-  { method: 'DELETE', endpoint: '/api/jobs/{id}', description: 'Delete Job' },
-  { method: 'POST', endpoint: '/api/jobs/{id}/pause', description: 'Pause Job' },
-  { method: 'POST', endpoint: '/api/jobs/{id}/resume', description: 'Resume Job' },
   { method: 'POST', endpoint: '/api/jobs/{id}/run', description: 'Trigger Job Now' },
 ]
 </script>
@@ -78,17 +53,6 @@ const endpoints = [
       <section class="settings-section">
         <h3 class="section-title">API Configuration</h3>
         <div class="form-group">
-          <label class="form-label">Server URL</label>
-          <NInput v-model:value="serverUrl" placeholder="http://127.0.0.1:8642" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">API Key (optional)</label>
-          <div class="input-with-action">
-            <NInput v-model:value="apiKey" type="password" show-password-on="click" placeholder="Enter API key" />
-            <NButton size="small" @click="handleSaveApiKey">Save</NButton>
-          </div>
-        </div>
-        <div class="form-group">
           <div class="connection-status">
             <span class="status-dot" :class="{ on: appStore.connected, off: !appStore.connected }"></span>
             <span>{{ appStore.connected ? 'Connected' : 'Disconnected' }}</span>
@@ -100,17 +64,34 @@ const endpoints = [
         </div>
       </section>
 
+      <!-- Model Management -->
+      <section class="settings-section">
+        <h3 class="section-title">Model Management</h3>
+        <div class="form-group">
+          <label class="form-label">Current Model</label>
+          <div class="current-model">{{ appStore.selectedModel || 'Not set' }}</div>
+        </div>
+
+        <div v-if="appStore.modelGroups.length > 0" class="form-group">
+          <label class="form-label">Available Models</label>
+          <p class="form-hint">Models are discovered from ~/.hermes/auth.json credential pool. Use the sidebar selector to switch.</p>
+          <NDataTable
+            :columns="providerColumns"
+            :data="appStore.modelGroups.map(g => ({
+              provider: g.label,
+              models: g.models.join(', '),
+              base_url: g.base_url,
+            }))"
+            :bordered="false"
+            size="small"
+            :row-props="() => ({ style: 'cursor: default;' })"
+          />
+        </div>
+      </section>
+
       <!-- Chat Settings -->
       <section class="settings-section">
         <h3 class="section-title">Chat Settings</h3>
-        <div class="form-group">
-          <label class="form-label">Default Model</label>
-          <NSelect
-            v-model:value="appStore.selectedModel"
-            :options="modelOptions"
-            placeholder="Select model"
-          />
-        </div>
         <div class="form-group">
           <label class="form-label">Stream Responses</label>
           <NSwitch v-model:value="appStore.streamEnabled" />
@@ -130,11 +111,11 @@ const endpoints = [
         <h3 class="section-title">About</h3>
         <p class="about-text">
           Hermes Agent Web UI
-          <br />Version 0.1.0
+          <br />Version 0.1.3
         </p>
         <div class="endpoint-table">
           <NDataTable
-            :columns="endpointColumns"
+            :columns="[{ title: 'Method', key: 'method', width: 80 }, { title: 'Endpoint', key: 'endpoint' }, { title: 'Description', key: 'description' }]"
             :data="endpoints"
             :bordered="false"
             size="small"
@@ -202,14 +183,10 @@ const endpoints = [
   }
 }
 
-.input-with-action {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-
-  .n-input {
-    flex: 1;
-  }
+.form-hint {
+  font-size: 12px;
+  color: $text-muted;
+  margin-bottom: 10px;
 }
 
 .connection-status {
@@ -239,6 +216,22 @@ const endpoints = [
     color: $text-muted;
     font-size: 12px;
   }
+}
+
+.current-model {
+  font-size: 14px;
+  font-weight: 500;
+  color: $text-primary;
+  padding: 6px 10px;
+  background: $bg-secondary;
+  border-radius: $radius-sm;
+  display: inline-block;
+}
+
+.empty-text {
+  font-size: 13px;
+  color: $text-muted;
+  font-style: italic;
 }
 
 .about-text {
